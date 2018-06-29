@@ -5,12 +5,13 @@ const resolve = (dir) => path.resolve(__dirname, '..', dir)
 
 module.exports = {
   entry: {
-    mue: ['./src/index.js'],
-    example: ['./test/example.js']
+    MyPromise: ['./src/index.js']
   },
   output: {
     path: resolve('dist'),
-    filename: '[name].bundle.js'
+    filename: '[name].umd.js',
+    library: "MyPromise",
+    libraryTarget: "umd"
   },
   module: {
     rules: [

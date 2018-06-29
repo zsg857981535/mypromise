@@ -29,7 +29,8 @@ module.exports = {
       // allow == operator
       'eqeqeq': 0,
       'quotes': [0, "double", "single", { "avoidEscape": true }],
-      "camelcase": 0
+      "camelcase": 0,
+      "no-new": 0
     }
   }
   

@@ -14,7 +14,13 @@
  * 3. 为啥then注册的回调要异步执行？
  */
 class Promise {
-  constructor (task) {
+  constructor (resolver) {
+    if (typeof resolver !== 'function') {
+      throw new Error('Promise resolver ' + resolver + ' is not a function')
+    }
+    if (!(this instanceof Promise)) { 
+      return new Promise(resolver)
+    }
     // 当前状态 存在{ pending, fulfilled, rejected }
     this.status = 'pending' // 没有隐藏状态值，可以通过外部改变
     // 当前resolve时的数据
@@ -26,7 +32,7 @@ class Promise {
     this.onRejectedList = []
     // 执行传入任务
     try {
-      task(this.onResolve.bind(this), this.onResolve.bind(this))
+      resolver(this.onResolve.bind(this), this.onResolve.bind(this))
     } catch (e) {
       this.onReject(e) // 捕获同步错误并reject当前Promise
     }
@@ -54,7 +60,7 @@ class Promise {
     if (this.status === 'pending') {
       this.status = 'rejected'
       this.rejectData = data
-      this.onRejectedList.forEach(fn => {  // 状态改变依次执行所有catch回调
+      this.onRejectedList.forEach(fn => { // 状态改变依次执行所有catch回调
         fn(this.rejectData)
       })
     }
@@ -67,10 +73,10 @@ class Promise {
    */
   then (onFulfilled, onRejected) {
     if (typeof onFulfilled !== 'function') {
-      onFulfilled = () => {}
+      onFulfilled = v => v // 值穿透，处理.then().then(v => v) 的情况
     }
     if (typeof onRejected !== 'function') {
-      onRejected = () => {}
+      onRejected = v => v
     }
 
     let promise2
@@ -101,7 +107,7 @@ class Promise {
         })
         break
       default:
-        throw 'promise status error'
+        throw new Error('promise status error')
     }
 
     return promise2
@@ -140,7 +146,8 @@ class Promise {
     // 如果返回的值是promise
     if (x instanceof Promise) {
       if (x.status === 'pending') {
-        x.then(y => {
+        x.then(function res (y) {
+          /* eslint-disable no-undef */
           resolvePromise(promise2, y, resolve, reject)
         }, reject)
       } else if (x.status === 'fulfilled') {
@@ -154,7 +161,8 @@ class Promise {
         then = x.then
         // 如果then为fn，递归调用then方法
         if (typeof then == 'function') {
-          then.call(x, y => {
+          then.call(x, function res (y) {
+            /* eslint-disable no-undef */
             resolvePromise(promise2, y, resolve, reject)
           })
         } else {
@@ -174,7 +182,34 @@ class Promise {
    * @param {Array} promiseList 
    */
   static all (promiseList) {
+    // 如果传入的不是数组， 抛出错误
+    if (Array.isArray(promiseList)) {
+      new TypeError('must be array')
+    }
+    return new Promise((resolve, reject) => {
+      if (!promiseList.length) { // 如果传入的数组长度为0， 则直接resolve
+        resolve([])
+      }
+      const allData = []
 
+      promiseList.forEach((item, index) => {
+        if (item instanceof Promise) {
+          item.then(res => {
+            allData.push(res)
+            resolveAll()
+          }, rej => reject(rej)) // 一个promise出错就退出
+        } else {
+          allData.push(item)
+          resolveAll()
+        }
+      })
+
+      function resolveAll () {
+        if (allData.length === promiseList.length) {
+          resolve(allData)
+        }
+      }
+    })
   }
 
   /**
@@ -182,10 +217,28 @@ class Promise {
    * @param {Array} promiseList 
    */
   static race (promiseList) {
+    // 如果传入的不是数组， 抛出错误
+    if (Array.isArray(promiseList)) {
+      new TypeError('must be array')
+    }
+    return new Promise((resolve, reject) => {
+      if (!promiseList.length) { // 如果传入的数组长度为0， 则直接resolve
+        resolve([])
+      }
 
+      promiseList.forEach((item, index) => {
+        if (item instanceof Promise) {
+          item.then(res => {
+            resolve(res)
+          }, rej => reject(rej)) // 一个promise出错就退出
+        } else {
+          resolve(item)
+        }
+      })
+    })
   }
 
-/**
+  /**
  * resolve 方法
  * @param {any} value 
  * @return {Promise}
@@ -194,10 +247,10 @@ class Promise {
     return new Promise((resolve, reject) => {
       if (value instanceof Promise) {
         value.then(res => {
-          reslove(res)
+          resolve(res)
         })
       } else {
-        reslove(value)
+        resolve(value)
       }
     })
   }
@@ -212,11 +265,12 @@ class Promise {
     })
   }
 
+  // 暴露给测试库的静态方法
   static deferred () {
     let dfd = {}
     dfd.promise = new Promise((resolve, reject) => {
       dfd.resolve = resolve
-      dfd.reject =reject
+      dfd.reject = reject
     })
     return dfd
   }
