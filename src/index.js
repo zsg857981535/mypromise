@@ -1,2 +1,2 @@
-import MyPromise from './promise'
-export default MyPromise
+// import MyPromise from './promise'
+// export default MyPromise

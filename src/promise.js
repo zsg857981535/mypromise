@@ -10,15 +10,18 @@
  *    因为Promise是单决议
  *    如果像这种形式: return Promise.reject(), 就不能从fulfilled的状态转变为rejected了
  *    所以统一处理返回新的Promise
- * 2. then回调不能被执行超过一次, 第一个then一定会执行
+ * 2. then回调不能被执行超过一次
  * 3. 为啥then注册的回调要异步执行？
+ *    onFulfiled可能是同步的，也可能是异步的，为了与外部代码隔离开，避免产生不必要的竟态作用，then的两个回调都统一
+ *    使用异步方式调用
  */
+const asyncFn = (fn) => setTimeout(fn, 0)
 class Promise {
   constructor (resolver) {
     if (typeof resolver !== 'function') {
       throw new Error('Promise resolver ' + resolver + ' is not a function')
     }
-    if (!(this instanceof Promise)) { 
+    if (!(this instanceof Promise)) {
       return new Promise(resolver)
     }
     // 当前状态 存在{ pending, fulfilled, rejected }
@@ -32,7 +35,7 @@ class Promise {
     this.onRejectedList = []
     // 执行传入任务
     try {
-      resolver(this.onResolve.bind(this), this.onResolve.bind(this))
+      resolver(this.onResolve.bind(this), this.onReject.bind(this))
     } catch (e) {
       this.onReject(e) // 捕获同步错误并reject当前Promise
     }
@@ -43,13 +46,15 @@ class Promise {
    * @param {any} data resolve数据 
    */
   onResolve (data) {
-    if (this.status === 'pending') {
-      this.status = 'fulfilled'
-      this.resolveData = data
-      this.onFulfilledList.forEach(fn => { // 状态改变依次执行所有then回调
-        fn(this.resolveData)
-      })
-    }
+    asyncFn(() => { // 异步执行回调
+      if (this.status === 'pending') {
+        this.status = 'fulfilled'
+        this.resolveData = data
+        this.onFulfilledList.forEach(fn => { // 状态改变依次执行所有then回调
+          fn(this.resolveData)
+        })
+      }
+    })
   }
 
   /**
@@ -57,13 +62,16 @@ class Promise {
    * @param {any} data reject数据 
    */
   onReject (data) {
-    if (this.status === 'pending') {
-      this.status = 'rejected'
-      this.rejectData = data
-      this.onRejectedList.forEach(fn => { // 状态改变依次执行所有catch回调
-        fn(this.rejectData)
-      })
-    }
+    asyncFn(() => {
+      if (this.status === 'pending') {
+        this.status = 'rejected'
+        this.rejectData = data
+        this.onRejectedList.forEach(fn => { // 状态改变依次执行所有then的onRejected回调
+          console.log('this.rejectData', this.rejectData)
+          fn(this.rejectData)
+        })
+      }
+    })
   }
 
   /**
@@ -80,31 +88,42 @@ class Promise {
     }
 
     let promise2
-
     switch (this.status) {
       case 'pending':
         promise2 = new Promise((resolve, reject) => {
-          this.onFulfilledList.push(() => {
-            let x = onFulfilled(this.resolveData) // 执行完then回调后的返回值
-            this.resolvePromise(promise2, x, resolve, reject)
-          })
-          this.onRejectedList.push(() => {
-            let x = onRejected(this.rejectData) // 执行完catch回调后的返回值
-            this.resolvePromise(promise2, x, resolve, reject)
-          })
+         try {
+            this.onFulfilledList.push(() => {
+              let x = onFulfilled(this.resolveData) // 执行完onFulfiled回调后的返回值
+              this.resolvePromise(promise2, x, resolve, reject)
+            })
+            this.onRejectedList.push(() => {
+              let x = onRejected(this.rejectData) // 执行完onRejected回调后的返回值
+              this.resolvePromise(promise2, x, resolve, reject)
+            })
+          } catch (e) {
+            reject(e)
+          }
         })
         break
       case 'fulfilled':
-        promise2 = new Promise((resolve, reject) => {
-          let x = onFulfilled(this.resolveData)
-          this.resolvePromise(promise2, x, resolve, reject)
-        })
+        try {
+          promise2 = new Promise((resolve, reject) => {
+            let x = onFulfilled(this.resolveData)
+            this.resolvePromise(promise2, x, resolve, reject)
+          })
+        } catch (e) {
+          reject(e)
+        }
         break
       case 'rejected':
-        promise2 = new Promise((resolve, reject) => {
-          let x = onRejected(this.rejectData)
-          this.resolvePromise(promise2, x, resolve, reject)
-        })
+        try {
+          promise2 = new Promise((resolve, reject) => {
+            let x = onRejected(this.rejectData)
+            this.resolvePromise(promise2, x, resolve, reject)
+          })
+        } catch (e) {
+          reject(e)
+        }
         break
       default:
         throw new Error('promise status error')
@@ -118,18 +137,11 @@ class Promise {
    * @param {Function} onRejected catch 方法等于reject
    */
   catch (onRejected) {
-    if (typeof onRejected !== 'function') {
-      onRejected = () => {}
-    }
-    let promise2
-    promise2 = new Promise((resolve, reject) => {
-      let x = onRejected(this.rejectData)
-      this.resolvePromise(promise2, x, resolve, reject)
-    })
+    return this.then(null, onRejected)
   }
 
   /**
-   * 
+   * 递归方法，多次then
    * @param {Promise} promise2 第二个promise 
    * @param {any} x 上一次then返回的数据
    * @param {*} resolve 当前成功方法
@@ -138,6 +150,7 @@ class Promise {
   resolvePromise (promise2, x, resolve, reject) {
     // 第二个then方法
     let then
+    let thenCalledOrThrow = false // 防止多次调用
     // 如果x等于promise2，则是重复调用
     if (promise2 === x) {
       return reject(new TypeError('循环引用'))
@@ -162,15 +175,23 @@ class Promise {
         // 如果then为fn，递归调用then方法
         if (typeof then == 'function') {
           then.call(x, function res (y) {
+            if (thenCalledOrThrow) return
             /* eslint-disable no-undef */
             resolvePromise(promise2, y, resolve, reject)
+            thenCalledOrThrow = true // 2.3.3.3.3 即这三处谁先执行就以谁的结果为准
+          }, function rej (r) {
+            if (thenCalledOrThrow) return
+            reject(r)
+            thenCalledOrThrow = true // 2.3.3.3.3 即这三处谁先执行就以谁的结果为准
           })
         } else {
           // 如果then 不为fn 则以x为值fulfill promise
           resolve(x)
         }
       } catch (e) {
-        reject(e) // 抛出错误结束执行
+        if (thenCalledOrThrow) return
+        reject(r)
+        thenCalledOrThrow = true // 2.3.3.3.3 即这三处谁先执行就以谁的结果为准      
       }
     } else {
       resolve(x)
